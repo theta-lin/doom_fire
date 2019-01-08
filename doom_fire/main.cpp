@@ -1,12 +1,16 @@
 #include <iostream>
+#include <algorithm>
 #include <thread>
+#include <mutex>
 #include <atomic>
 #include <string>
+#include <random>
+#include <ctime>
 #include <SDL.h>
 #include "timer.hpp"
 
-const int g_width{640};
-const int g_height{480};
+const int g_width{512};
+const int g_height{256};
 
 const Uint32 color[32]
 {
@@ -43,9 +47,35 @@ const Uint32 color[32]
 	0x00FBFFFF,
 	0x00AFFFFF
 };
+
 Uint32 pixels[g_width * g_height];
+Uint32 result[g_width * g_height];
+std::mutex lock;
 std::atomic<bool> g_renderExit{false};
 std::atomic<bool> g_fireOn{false};
+
+void spreadFire(size_t src)
+{
+	static std::mt19937 s_rand{std::random_device{}()};
+	const std::uniform_int_distribution<Uint32> distDecay(0, 4);
+	const std::uniform_int_distribution<int> distOffset(-1, 1);
+	Uint32 decay{distDecay(s_rand) == 0};
+	Uint32 dst{src - g_width};
+	int offset{distOffset(s_rand)};
+	if (offset < 0 && dst == 0) offset = 0;
+	pixels[dst + offset] = std::max(decay, pixels[src]) - decay;
+}
+
+void doFire()
+{
+	for (size_t x{0}; x < g_width; ++x)
+	{
+		for (size_t y{1}; y < g_height; ++y)
+		{
+			spreadFire(y * g_width + x);
+		}
+	}
+}
 
 void render(SDL_Texture *texture, SDL_Renderer *renderer, SDL_Window *window)
 {
@@ -53,7 +83,13 @@ void render(SDL_Texture *texture, SDL_Renderer *renderer, SDL_Window *window)
 	int fpsCount{0};
 	while (!g_renderExit)
 	{
-		SDL_UpdateTexture(texture, NULL, pixels, g_width * sizeof(Uint32));
+		lock.lock();
+		doFire();
+		for (size_t i{0}; i < g_height * g_width; ++i)
+			result[i] = color[pixels[i]];
+		SDL_UpdateTexture(texture, NULL, result, g_width * sizeof(Uint32));
+		lock.unlock();
+
 		SDL_RenderClear(renderer);
 		SDL_RenderCopy(renderer, texture, NULL, NULL);
 		SDL_RenderPresent(renderer);
@@ -73,6 +109,8 @@ void render(SDL_Texture *texture, SDL_Renderer *renderer, SDL_Window *window)
 			timer.reset();
 			fpsCount = 0;
 		}
+
+		SDL_Delay(20);
 	}
 }
 
@@ -112,8 +150,8 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	memset(pixels, 0, sizeof(pixels));
 	std::thread renderThread{render, texture, renderer, window};
-
 	SDL_Event event;
 	bool quit{false};
 
@@ -130,6 +168,18 @@ int main(int argc, char *argv[])
 				{
 				case SDLK_SPACE:
 					g_fireOn = !g_fireOn;
+					lock.lock();
+					if (g_fireOn)
+					{
+						for (size_t x{0}; x < g_width; ++x)
+							pixels[g_width * (g_height - 1) + x] = 31;
+					}
+					else
+					{
+						for (size_t x{0}; x < g_width; ++x)
+							pixels[g_width * (g_height - 1) + x] = 0;
+					}
+					lock.unlock();
 					break;
 				}
 				break;
